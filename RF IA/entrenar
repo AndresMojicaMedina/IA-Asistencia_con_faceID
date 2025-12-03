@@ -1,0 +1,61 @@
+import os
+import pickle
+import cv2
+import face_recognition
+
+CARPETA_ROSTROS = "Rostros"
+nombres_conocidos = []
+encodings_conocidos = []
+
+print("Iniciando entrenamiento...\n")
+
+#Ruta carpeta de rostros
+for persona in os.listdir(CARPETA_ROSTROS):
+    ruta_persona = os.path.join(CARPETA_ROSTROS, persona)
+    if not os.path.isdir(ruta_persona):
+        continue
+
+    print(f"Procesando persona: {persona}")
+
+    for archivo in os.listdir(ruta_persona):
+        if not archivo.lower().endswith((".jpg", ".jpeg", ".png")):
+            continue
+        
+        ruta_imagen = os.path.join(ruta_persona, archivo)
+
+        try:
+            # Leer imagen con opencv
+            img = cv2.imread(ruta_imagen)
+
+            if img is None:
+                print(f" No se pudo leer: {archivo}")
+                continue
+
+            # Convertir BGR → RGB
+            rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+            print(f"→ {archivo} dtype={rgb.dtype}, shape={rgb.shape}")
+
+            # Detectar cara
+            faces = face_recognition.face_locations(rgb)
+            encs  = face_recognition.face_encodings(rgb, faces)
+
+            #Verifica si hubo por lo menos 1 rostro
+            if len(encs) > 0:
+                encodings_conocidos.append(encs[0])
+                nombres_conocidos.append(persona)
+                print(f"Rostro agregado: {archivo}")
+            else:
+                print(f" No se detectó rostro en {archivo}")
+
+        except Exception as e:
+            print(f" ERROR procesando {archivo}: {e}")
+
+# Guardar datos con write binary
+if len(encodings_conocidos) > 0:
+    with open("rostros_entrenados.pkl", "wb") as f:
+        pickle.dump((nombres_conocidos, encodings_conocidos), f)
+
+    print(f"\n Entrenamiento completado. {len(encodings_conocidos)} rostros guardados.")
+else:
+    print("\n No se detectó ningún rostro.")
