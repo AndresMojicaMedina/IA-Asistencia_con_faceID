@@ -1,0 +1,284 @@
+# ========== LIBRERIAS Y SUS FUNCIONES ==========
+import cv2                          
+import pickle                       
+import time                         
+import face_recognition             
+import numpy as np                  
+from datetime import datetime       
+
+import tkinter as tk                
+from tkinter import ttk, filedialog, messagebox  # Componentes avanzados de Tkinter
+
+from PIL import Image, ImageTk      
+
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle  # PDF - Crear documentos PDF
+from reportlab.lib import colors    
+from reportlab.lib.pagesizes import letter  
+
+
+
+# ========== CONFIGURACION DEL SISTEMA ==========
+TOLERANCIA = 0.5  
+MINUTOS_SALIDA = 1  
+MODEL_PKL = "rostros_entrenados.pkl"  
+HORA_LIMITE = datetime.now().replace(hour=13, minute=35, second=0)  
+
+
+
+# ========== ESTADO GLOBAL DEL SISTEMA ==========
+estado = {}        
+hora_entrada = {}  
+completado = set() 
+
+
+
+# ========== CARGA DEL MODELO DE ROSTROS ==========
+try:
+    # Abre el archivo binario con los rostros entrenados
+    with open(MODEL_PKL, "rb") as f:
+        # pickle.load() reconstruye los objetos Python desde bytes
+        nombres, encodings = pickle.load(f)
+except:
+    nombres, encodings = [], []
+
+
+
+# =================================================
+#
+#
+#
+# ========== CONFIGURACION DE LA INTERFAZ GRAFICA ==========
+root = tk.Tk()  # Crea la ventana principal de la aplicacion
+root.title("Sistema de Asistencia")  # Titulo de la ventana
+root.configure(bg="#DAE8FF")  # Color de fondo azul claro
+
+# Configura el tema y estilo de los componentes ttk
+style = ttk.Style()
+style.theme_use("clam")  # Tema "clam" - moderno y limpio
+style.configure("Treeview", background="#FFFFFF", foreground="black", rowheight=25)
+style.configure("Treeview.Heading", background="#C2D7FF", foreground="black")
+
+# ========== DISENO DE LA INTERFAZ ==========
+contenedor = tk.Frame(root, bg="#DAE8FF")
+contenedor.pack(padx=15, pady=15)
+
+# Titulo CON fondo azul oscuro (recuperado)
+titulo_frame = tk.Frame(contenedor, bg="#1B3B6F", relief="solid", bd=1)
+titulo_frame.grid(row=0, column=0, columnspan=2, pady=(0, 15), sticky="ew")
+
+titulo = tk.Label(titulo_frame, text="Sistema de Registro de Asistencia",
+                  font=("Arial", 14, "bold"), bg="#1B3B6F", fg="white", pady=8)
+titulo.pack()
+
+# Panel superior con informacion
+panel_superior = tk.Frame(contenedor, bg="#C2D7FF")
+panel_superior.grid(row=1, column=0, columnspan=2, pady=(0, 10), sticky="ew")
+
+hora_label = tk.Label(panel_superior, text="", font=("Arial", 10), bg="#C2D7FF", fg="#1B3B6F")
+hora_label.pack(side="left", padx=10, pady=5)
+
+contador_label = tk.Label(panel_superior, text="Registros: 0", font=("Arial", 10), bg="#C2D7FF", fg="#1B3B6F")
+contador_label.pack(side="right", padx=10, pady=5)
+
+# Marco para la camara
+frame_camara = tk.Frame(contenedor, bg="#AAC8FF", bd=2, relief="solid")
+frame_camara.grid(row=2, column=0, padx=5, pady=5)
+
+cam_label = tk.Label(frame_camara, bg="#AAC8FF")
+cam_label.pack()
+
+# Marco para la tabla de registros
+tabla_box = tk.Frame(contenedor, bg="#DAE8FF")
+tabla_box.grid(row=2, column=1, padx=10, pady=5)
+
+tabla_label = tk.Label(tabla_box, text="Registros del dia", font=("Arial", 12, "bold"), bg="#DAE8FF", fg="#1B3B6F")
+tabla_label.pack(pady=(0, 5))
+
+tabla_container = tk.Frame(tabla_box, bg="#DAE8FF")
+tabla_container.pack(fill="both", expand=True)
+
+# ========== TABLA DE REGISTROS ==========
+# Treeview es un widget que muestra datos en forma de tabla con filas y columnas
+tabla = ttk.Treeview(tabla_container, columns=("tipo", "hora", "puntualidad"), show="headings", height=15)
+tabla.heading("tipo", text="Accion")  
+tabla.heading("hora", text="Hora")    
+tabla.heading("puntualidad", text="Puntualidad")  
+tabla.column("tipo", width=180)       
+tabla.column("hora", width=80)        
+tabla.column("puntualidad", width=100) 
+
+scrollbar = ttk.Scrollbar(tabla_container, orient="vertical", command=tabla.yview)
+tabla.configure(yscrollcommand=scrollbar.set)  # Conecta la tabla con la scrollbar
+tabla.pack(side="left", fill="both", expand=True)
+scrollbar.pack(side="right", fill="y")
+
+# ========== BOTON EXPORTAR PDF ==========
+# Frame para contener el boton centrado
+botones_frame = tk.Frame(contenedor, bg="#DAE8FF")
+botones_frame.grid(row=3, column=0, columnspan=2, pady=10)
+
+#
+#
+#
+#
+# ========================================
+
+# ========== FUNCIONES DEL SISTEMA ==========
+
+def actualizar_hora():
+
+    hora = datetime.now().strftime("%H:%M:%S")
+    hora_label.config(text=hora)  
+    root.after(1000, actualizar_hora)  #Ejecucion recursiva
+
+
+
+
+def actualizar_contador():
+    
+    total = len(tabla.get_children())  # get_children() devuelve lista de IDs de filas
+    contador_label.config(text=f"Registros: {total}")
+
+
+
+
+def verificar_puntualidad(hora_registro):
+    
+    #Definimos formato HH:MM:SS
+    hora_actual = datetime.now().replace(
+        hour=int(hora_registro[:2]), 
+        minute=int(hora_registro[3:5]), 
+        second=int(hora_registro[6:8])
+    )
+    return "Puntual" if hora_actual <= HORA_LIMITE else "Retraso"
+
+
+
+
+def exportar_pdf():
+
+    registros = tabla.get_children()  # Obtiene todos los IDs de filas
+    if not registros:
+        messagebox.showwarning("Sin datos", "No hay registros para exportar")
+        return
+
+    fname = filedialog.asksaveasfilename(
+        defaultextension=".pdf", 
+        filetypes=[("PDF files", "*.pdf")]
+    )
+    if not fname:  # Usuario cancelo el dialogo
+        return
+
+    try:
+        # Prepara datos de las filas
+        data = [["Accion", "Hora", "Puntualidad"]] 
+        for r in registros:
+            data.append(tabla.item(r)["values"]) #Añadir dato
+
+        # Diseño del PDF
+        doc = SimpleDocTemplate(fname, pagesize=letter)
+        tabla_pdf = Table(data, colWidths=[200, 80, 80])
+        
+        tabla_pdf.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#C2D7FF")), 
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),  
+            ('GRID', (0, 0), (-1, -1), 1, colors.grey) 
+        ]))
+        
+        #PDF se guardo
+        doc.build([tabla_pdf])  
+        messagebox.showinfo("Exito", "PDF exportado correctamente")
+        
+    except Exception as e:
+        messagebox.showerror("Error", f"No se pudo guardar el PDF: {str(e)}")
+
+def registrar(tipo, nombre):
+
+    hora = datetime.now().strftime("%H:%M:%S")
+
+    puntualidad = verificar_puntualidad(hora) if tipo == "Entrada" else "-"
+    
+    # Inserta nueva fila al final de la tabla
+    tabla.insert("", "end", values=(f"{tipo} - {nombre}", hora, puntualidad))
+    actualizar_contador() 
+
+# ========== CONFIGURACION DE CAMARA ==========
+cap = cv2.VideoCapture(0)  
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 480)   
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)  
+
+# ========== BOTON EXPORTAR ==========
+btn_pdf = tk.Button(botones_frame, text="Exportar lista (PDF)", font=("Arial", 10),
+                    bg="#6FA8FF", fg="white", command=exportar_pdf)
+btn_pdf.pack()  # Centrado automaticamente
+
+# ========== PROCESAMIENTO DE VIDEO Y RECONOCIMIENTO ==========
+ultimo_procesamiento = 0  
+INTERVALO_RECONOCIMIENTO = 3.0
+
+def actualizar():
+    
+    global ultimo_procesamiento
+    
+    # Verificar captura de frame/imagen
+    ret, frame = cap.read()
+    if not ret:  
+        root.after(10, actualizar)
+        return
+
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    
+    # Convierte foto de camara a formato compatible con Tkinter
+    im = Image.fromarray(rgb)
+    imgtk = ImageTk.PhotoImage(image=im)
+    cam_label.imgtk = imgtk  # Guarda referencia para evitar garbage collection
+    cam_label.configure(image=imgtk)  # Muestra la imagen en la pantalla
+
+    # Procesamiento facial controlado por intervalo (no en cada frame)
+    tiempo_actual = time.time()
+    if tiempo_actual - ultimo_procesamiento > INTERVALO_RECONOCIMIENTO:
+        
+        caras = face_recognition.face_locations(rgb)
+        encs = face_recognition.face_encodings(rgb, caras)
+
+        # Procesa cada rostro detectado
+        for encoding_actual in encs:
+            if not encodings:
+                continue
+                
+            dist = face_recognition.face_distance(encodings, encoding_actual) # Calcula similitud
+            idx = np.argmin(dist)  # Cara mas cercana
+            
+            nombre = nombres[idx] if dist[idx] < TOLERANCIA else None
+            
+            if not nombre or nombre in completado:
+                continue
+
+            # LOGICA DE ESTADOS:
+            if nombre not in estado:
+                # PRIMERA DETECCION → Registrar entrada
+                registrar("Entrada", nombre)
+                estado[nombre] = "esperando_salida"  
+                hora_entrada[nombre] = time.time()   
+                
+            elif estado[nombre] == "esperando_salida":
+                # Ya paso tiempo minimo → Registrar salida
+                if time.time() - hora_entrada[nombre] >= MINUTOS_SALIDA * 60:
+                    registrar("Salida", nombre)
+                    completado.add(nombre)  # Marca como ciclo completado
+                    # Limpia estado para liberar memoria
+                    estado.pop(nombre, None)
+                    hora_entrada.pop(nombre, None)
+        
+        ultimo_procesamiento = tiempo_actual  
+
+    
+    root.after(15, actualizar)
+
+# ========== INICIALIZACION Y EJECUCION ==========
+actualizar_hora()  
+actualizar()       
+root.mainloop()    
+
+# ========== LIMPIEZA AL CERRAR ==========
+cap.release()  
